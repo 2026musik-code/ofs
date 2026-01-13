@@ -16,7 +16,8 @@ echo -e "${GREEN}Starting VPS VPN Auto-Installer...${PLAIN}"
 
 # 1. System Update & Dependencies
 echo -e "${YELLOW}[1/6] Updating System & Installing Dependencies...${PLAIN}"
-apt update && apt install -y curl wget git nginx certbot python3-certbot-nginx unzip uuid-runtime apache2-utils qrencode php-fpm php-cli php-xml
+# Added php-fpm, php, sudo (for reload), and jq (for json manipulation if needed, though PHP handles it)
+apt update && apt install -y curl wget git nginx certbot python3-certbot-nginx unzip uuid-runtime apache2-utils qrencode php-fpm php-cli php-xml sudo
 
 # 2. Input Domain
 echo -e "${YELLOW}[2/6] Configuration${PLAIN}"
@@ -41,31 +42,12 @@ cat > /usr/local/etc/xray/config.json <<EOF
     "access": "/var/log/xray/access.log",
     "error": "/var/log/xray/error.log"
   },
-  "stats": {},
-  "api": {
-    "services": [
-      "StatsService"
-    ],
-    "tag": "api"
-  },
-  "policy": {
-    "levels": {
-      "0": {
-        "statsUserUplink": true,
-        "statsUserDownlink": true
-      }
-    },
-    "system": {
-      "statsInboundUplink": true,
-      "statsInboundDownlink": true
-    }
-  },
   "inbounds": [
     {
       "port": 10001,
       "protocol": "vless",
       "settings": {
-        "clients": [ { "id": "$UUID", "email": "admin@vps" } ],
+        "clients": [ { "id": "$UUID", "email": "admin" } ],
         "decryption": "none"
       },
       "streamSettings": {
@@ -77,7 +59,7 @@ cat > /usr/local/etc/xray/config.json <<EOF
       "port": 10002,
       "protocol": "vmess",
       "settings": {
-        "clients": [ { "id": "$UUID", "email": "admin@vps" } ]
+        "clients": [ { "id": "$UUID", "email": "admin" } ]
       },
       "streamSettings": {
         "network": "ws",
@@ -88,38 +70,18 @@ cat > /usr/local/etc/xray/config.json <<EOF
       "port": 10003,
       "protocol": "trojan",
       "settings": {
-        "clients": [ { "password": "$UUID", "email": "admin@vps" } ]
+        "clients": [ { "password": "$UUID", "email": "admin" } ]
       },
       "streamSettings": {
         "network": "ws",
         "wsSettings": { "path": "/trojan" }
       }
-    },
-    {
-      "listen": "127.0.0.1",
-      "port": 10080,
-      "protocol": "dokodemo-door",
-      "settings": {
-        "address": "127.0.0.1"
-      },
-      "tag": "api"
     }
   ],
   "outbounds": [
     { "protocol": "freedom" },
     { "protocol": "blackhole", "tag": "block" }
-  ],
-  "routing": {
-    "rules": [
-      {
-        "inboundTag": [
-          "api"
-        ],
-        "outboundTag": "api",
-        "type": "field"
-      }
-    ]
-  }
+  ]
 }
 EOF
 
@@ -132,15 +94,31 @@ echo -e "${YELLOW}[5/6] Setting up Nginx & Dashboard (PHP)...${PLAIN}"
 
 # Dashboard Directory
 mkdir -p /var/www/vpanel
-rm -f /var/www/vpanel/index.html # Remove old HTML if exists
+rm -f /var/www/vpanel/index.html
+
+# --- INITIAL USERS DB ---
+# Initialize users.json with the admin/default account
+echo "[{\"username\":\"admin\",\"uuid\":\"$UUID\",\"created_at\":\"$(date)\"}]" > /etc/vpanel_users.json
+chown root:www-data /etc/vpanel_users.json
+chmod 660 /etc/vpanel_users.json # RW for root and www-data
+
+# --- SUDOERS FOR PHP ---
+# Allow www-data to restart xray without password
+echo "www-data ALL=(root) NOPASSWD: /usr/bin/systemctl restart xray" > /etc/sudoers.d/vpanel
+chmod 0440 /etc/sudoers.d/vpanel
 
 # --- LOGIN PAGE (PHP) ---
 cat > /var/www/vpanel/login.php <<'PHP'
 <?php
 session_start();
+// Default Admin Login (using the first user's UUID or a separate admin pass)
+// For simplicity, we use the Admin UUID (first user) as the login key
+$users_file = '/etc/vpanel_users.json';
+$users = json_decode(file_get_contents($users_file), true);
+$admin_uuid = $users[0]['uuid'] ?? '';
+
 if(isset($_POST['password'])) {
-    $config_uuid = trim(file_get_contents('/etc/vpanel_uuid'));
-    if($_POST['password'] === $config_uuid) {
+    if($_POST['password'] === $admin_uuid) {
         $_SESSION['logged_in'] = true;
         header('Location: index.php');
         exit;
@@ -160,7 +138,7 @@ if(isset($_POST['password'])) {
             margin: 0;
             padding: 0;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #0f0c29;  /* fallback for old browsers */
+            background: #0f0c29;
             background: linear-gradient(to right, #24243e, #302b63, #0f0c29);
             height: 100vh;
             display: flex;
@@ -210,7 +188,7 @@ if(isset($_POST['password'])) {
         <h2>Admin Access</h2>
         <?php if(isset($error)) echo "<p class='error'>$error</p>"; ?>
         <form method="POST">
-            <input type="password" name="password" placeholder="Enter UUID Key" required>
+            <input type="password" name="password" placeholder="Enter Admin UUID" required>
             <button type="submit">LOGIN</button>
         </form>
     </div>
@@ -228,249 +206,255 @@ if(!isset($_SESSION['logged_in'])) {
 }
 
 $domain = $_SERVER['HTTP_HOST'];
-$uuid = trim(file_get_contents('/etc/vpanel_uuid'));
+$users_file = '/etc/vpanel_users.json';
+$xray_config = '/usr/local/etc/xray/config.json';
 
-// --- Server Stats ---
-// CPU Load
-$load = sys_getloadavg();
-$cpu_load = $load[0] * 100; // Rough estimate percentage based on 1 core
+// --- Functions ---
+function getUsers() {
+    global $users_file;
+    return json_decode(file_get_contents($users_file), true);
+}
 
-// RAM Usage
+function saveUsers($users) {
+    global $users_file;
+    file_put_contents($users_file, json_encode($users, JSON_PRETTY_PRINT));
+}
+
+function updateXrayConfig($users) {
+    global $xray_config;
+    $config = json_decode(file_get_contents($xray_config), true);
+
+    // Generate clients array
+    $clients = [];
+    $trojan_clients = [];
+    foreach($users as $u) {
+        $clients[] = ["id" => $u['uuid'], "email" => $u['username']];
+        $trojan_clients[] = ["password" => $u['uuid'], "email" => $u['username']];
+    }
+
+    // Update Inbounds
+    // 0: VLESS, 1: VMess, 2: Trojan
+    $config['inbounds'][0]['settings']['clients'] = $clients;
+    $config['inbounds'][1]['settings']['clients'] = $clients;
+    $config['inbounds'][2]['settings']['clients'] = $trojan_clients;
+
+    file_put_contents($xray_config, json_encode($config, JSON_PRETTY_PRINT));
+
+    // Restart Xray
+    shell_exec('sudo systemctl restart xray');
+}
+
+function uuidv4() {
+    $data = random_bytes(16);
+    $data[6] = chr(ord($data[6]) & 0x0f | 0x40);
+    $data[8] = chr(ord($data[8]) & 0x3f | 0x80);
+    return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
+}
+
+// --- Actions ---
+if(isset($_POST['action'])) {
+    $users = getUsers();
+
+    if($_POST['action'] === 'add') {
+        $username = htmlspecialchars($_POST['username']);
+        $uuid = uuidv4();
+        $users[] = [
+            "username" => $username,
+            "uuid" => $uuid,
+            "created_at" => date('Y-m-d H:i:s')
+        ];
+        saveUsers($users);
+        updateXrayConfig($users);
+    }
+    elseif($_POST['action'] === 'delete') {
+        $uuid_to_del = $_POST['uuid'];
+        $new_users = [];
+        foreach($users as $u) {
+            if($u['uuid'] !== $uuid_to_del) {
+                $new_users[] = $u;
+            }
+        }
+        saveUsers($new_users);
+        updateXrayConfig($new_users);
+    }
+}
+
+$users = getUsers();
+
+// Stats logic (Same as before)
+$load = sys_getloadavg(); $cpu_load = $load[0] * 100;
 $free = shell_exec('free -m');
-$free = (string)trim($free);
-$free_arr = explode("\n", $free);
-$mem = explode(" ", $free_arr[1]);
-$mem = array_filter($mem);
-$mem = array_merge($mem);
-$mem_total = $mem[1];
-$mem_used = $mem[2];
-$mem_percent = round(($mem_used / $mem_total) * 100);
-
-// Traffic (Interface eth0 or venet0)
+$free_arr = explode("\n", trim($free));
+$mem = array_merge(array_filter(explode(" ", $free_arr[1])));
+$mem_percent = round(($mem[2] / $mem[1]) * 100);
 $net = file_get_contents('/proc/net/dev');
-preg_match('/(eth0|venet0|ens\d+):\s*(\d+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)/', $net, $matches);
-$rx_total = isset($matches[2]) ? round($matches[2] / 1024 / 1024, 2) : 0; // MB
-$tx_total = isset($matches[3]) ? round($matches[3] / 1024 / 1024, 2) : 0; // MB
+preg_match('/(eth0|venet0|ens\d+):\s*(\d+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)/', $net, $matches);
+$rx = isset($matches[2]) ? round($matches[2]/1024/1024, 2) : 0;
+$tx = isset($matches[3]) ? round($matches[3]/1024/1024, 2) : 0;
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Premium VPN Panel</title>
+    <title>VPN Admin Panel</title>
     <script src="https://cdn.jsdelivr.net/npm/qrcode@1.4.4/build/qrcode.min.js"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        :root { --gold: #ffd700; --dark: #1a1a2e; --light: #e0e0e0; --card-bg: rgba(255,255,255,0.05); }
-        body {
-            font-family: 'Segoe UI', sans-serif;
-            background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
-            color: var(--light);
-            margin: 0;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-        }
-        .header {
-            width: 100%;
-            padding: 20px;
-            background: rgba(0,0,0,0.3);
-            text-align: center;
-            border-bottom: 1px solid rgba(255, 215, 0, 0.1);
-        }
-        .header h1 { margin: 0; color: var(--gold); letter-spacing: 2px; }
+        :root { --gold: #ffd700; --dark: #1a1a2e; --card-bg: rgba(255,255,255,0.05); }
+        body { font-family: 'Segoe UI', sans-serif; background: linear-gradient(135deg, #0f0c29, #302b63, #24243e); color: #e0e0e0; margin: 0; padding-bottom: 50px; }
+        .header { background: rgba(0,0,0,0.3); padding: 20px; text-align: center; border-bottom: 1px solid rgba(255,215,0,0.1); }
+        h1 { margin: 0; color: var(--gold); letter-spacing: 2px; }
+        .container { max-width: 1000px; margin: 30px auto; padding: 0 20px; }
+        .card { background: var(--card-bg); backdrop-filter: blur(10px); border-radius: 15px; padding: 20px; border: 1px solid rgba(255,255,255,0.1); margin-bottom: 20px; }
+        .row { display: flex; gap: 20px; flex-wrap: wrap; }
+        .col { flex: 1; min-width: 250px; }
+        .stat-val { font-size: 1.5rem; color: #fff; font-weight: bold; }
 
-        .container {
-            max-width: 1000px;
-            width: 95%;
-            margin-top: 30px;
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
-        }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.1); }
+        th { color: var(--gold); text-transform: uppercase; font-size: 0.9rem; }
+        tr:hover { background: rgba(255,255,255,0.05); }
 
-        .card {
-            background: var(--card-bg);
-            backdrop-filter: blur(10px);
-            border-radius: 15px;
-            padding: 20px;
-            border: 1px solid rgba(255,255,255,0.1);
-            transition: transform 0.3s;
-        }
-        .card:hover { transform: translateY(-5px); border-color: var(--gold); }
+        input[type="text"] { background: rgba(0,0,0,0.3); border: 1px solid #444; padding: 10px; color: #fff; border-radius: 5px; width: 200px; }
+        .btn { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        .btn-add { background: var(--gold); color: #000; }
+        .btn-del { background: #ff4444; color: #fff; padding: 5px 10px; font-size: 0.8rem; }
+        .btn-link { background: #007bff; color: #fff; padding: 5px 10px; font-size: 0.8rem; text-decoration: none; display: inline-block; border-radius: 3px; cursor: pointer; }
 
-        .stat-box { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
-        .stat-title { font-size: 0.9rem; color: #aaa; }
-        .stat-value { font-size: 1.5rem; font-weight: bold; color: #fff; }
-        .progress-bar { width: 100%; height: 6px; background: #333; border-radius: 3px; overflow: hidden; }
-        .progress-fill { height: 100%; background: var(--gold); width: 0%; transition: width 1s; }
-
-        .tabs { display: flex; gap: 10px; margin-bottom: 20px; justify-content: center; }
-        .tab-btn {
-            background: transparent;
-            border: 1px solid var(--gold);
-            color: var(--gold);
-            padding: 8px 20px;
-            border-radius: 20px;
-            cursor: pointer;
-            transition: 0.3s;
-        }
-        .tab-btn.active, .tab-btn:hover { background: var(--gold); color: #000; }
-
-        textarea {
-            width: 100%;
-            height: 80px;
-            background: rgba(0,0,0,0.3);
-            border: 1px solid #444;
-            color: #0f0;
-            padding: 10px;
-            border-radius: 5px;
-            font-family: monospace;
-            resize: none;
-        }
-
-        .copy-btn {
-            width: 100%;
-            margin-top: 10px;
-            padding: 10px;
-            background: var(--gold);
-            border: none;
-            color: #000;
-            font-weight: bold;
-            cursor: pointer;
-            border-radius: 5px;
-        }
-
-        #qrcode { display: flex; justify-content: center; margin-top: 15px; padding: 10px; background: #fff; border-radius: 10px; width: fit-content; margin-left: auto; margin-right: auto; }
-
-        .info-row { margin-bottom: 10px; font-size: 0.9rem; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 5px; }
-        .info-label { color: #aaa; }
-        .info-val { float: right; color: #fff; }
+        /* Modal for QR */
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; justify-content: center; align-items: center; }
+        .modal-content { background: #222; padding: 30px; border-radius: 10px; text-align: center; max-width: 500px; width: 90%; }
+        textarea { width: 100%; height: 100px; background: #111; color: #0f0; border: none; padding: 10px; margin-top: 10px; }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1><i class="fas fa-shield-alt"></i> VPS CONTROL PANEL</h1>
-    </div>
+    <div class="header"><h1>VPS MANAGER</h1></div>
 
     <div class="container">
-        <!-- System Stats -->
-        <div class="card">
-            <h3 style="color: var(--gold); margin-top: 0;"><i class="fas fa-server"></i> Server Status</h3>
-
-            <div class="stat-box">
-                <div>
-                    <div class="stat-title">CPU Load</div>
-                    <div class="stat-value"><?php echo round($cpu_load, 1); ?>%</div>
-                </div>
-                <i class="fas fa-microchip fa-2x" style="color: #555;"></i>
+        <!-- Stats -->
+        <div class="row">
+            <div class="col card">
+                <h3>CPU Load</h3>
+                <div class="stat-val"><?php echo round($cpu_load,1); ?>%</div>
             </div>
-            <div class="progress-bar"><div class="progress-fill" style="width: <?php echo min($cpu_load, 100); ?>%"></div></div>
-            <br>
-
-            <div class="stat-box">
-                <div>
-                    <div class="stat-title">RAM Usage</div>
-                    <div class="stat-value"><?php echo $mem_percent; ?>%</div>
-                    <small style="color:#666;"><?php echo $mem_used . "MB / " . $mem_total . "MB"; ?></small>
-                </div>
-                <i class="fas fa-memory fa-2x" style="color: #555;"></i>
+            <div class="col card">
+                <h3>RAM Usage</h3>
+                <div class="stat-val"><?php echo $mem_percent; ?>%</div>
             </div>
-            <div class="progress-bar"><div class="progress-fill" style="width: <?php echo $mem_percent; ?>%"></div></div>
-        </div>
-
-        <!-- Network Stats -->
-        <div class="card">
-            <h3 style="color: var(--gold); margin-top: 0;"><i class="fas fa-network-wired"></i> Network Traffic</h3>
-            <div class="info-row">
-                <span class="info-label">Domain</span>
-                <span class="info-val"><?php echo $domain; ?></span>
-            </div>
-            <div class="info-row">
-                <span class="info-label">Total Download (RX)</span>
-                <span class="info-val"><?php echo $rx_total; ?> MB</span>
-            </div>
-            <div class="info-row">
-                <span class="info-label">Total Upload (TX)</span>
-                <span class="info-val"><?php echo $tx_total; ?> MB</span>
-            </div>
-             <div class="info-row">
-                <span class="info-label">Account Type</span>
-                <span class="info-val">Single User (Admin)</span>
-            </div>
-            <div class="info-row">
-                <span class="info-label">Traffic Usage</span>
-                <span class="info-val">See Total Network Above</span>
+            <div class="col card">
+                <h3>Total Traffic</h3>
+                <div class="stat-val"><?php echo $rx + $tx; ?> MB</div>
             </div>
         </div>
 
-        <!-- Config Generator -->
-        <div class="card" style="grid-column: 1 / -1;">
-            <div class="tabs">
-                <button class="tab-btn active" onclick="setProto('vless')">VLESS</button>
-                <button class="tab-btn" onclick="setProto('vmess')">VMess</button>
-                <button class="tab-btn" onclick="setProto('trojan')">Trojan</button>
-            </div>
+        <!-- Add User -->
+        <div class="card">
+            <h3 style="color: var(--gold);">Create New User</h3>
+            <form method="POST" style="display: flex; gap: 10px; align-items: center;">
+                <input type="hidden" name="action" value="add">
+                <input type="text" name="username" placeholder="Username" required>
+                <button type="submit" class="btn btn-add"><i class="fas fa-plus"></i> Generate Account</button>
+            </form>
+        </div>
 
-            <textarea id="link" readonly></textarea>
-            <button class="copy-btn" onclick="copyLink()">COPY CONFIGURATION</button>
-            <div id="qrcode"></div>
+        <!-- User List -->
+        <div class="card">
+            <h3 style="color: var(--gold);">User Management</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Username</th>
+                        <th>UUID</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach($users as $u): ?>
+                    <tr>
+                        <td><?php echo htmlspecialchars($u['username']); ?></td>
+                        <td style="font-family: monospace; font-size: 0.9rem;"><?php echo $u['uuid']; ?></td>
+                        <td style="font-size: 0.8rem; color: #aaa;"><?php echo $u['created_at']; ?></td>
+                        <td>
+                            <button class="btn-link" onclick="showLinks('<?php echo $u['uuid']; ?>', '<?php echo $domain; ?>')">Links</button>
+                            <?php if($u['username'] !== 'admin'): ?>
+                            <form method="POST" style="display:inline;" onsubmit="return confirm('Delete user?');">
+                                <input type="hidden" name="action" value="delete">
+                                <input type="hidden" name="uuid" value="<?php echo $u['uuid']; ?>">
+                                <button type="submit" class="btn btn-del">Delete</button>
+                            </form>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Modal -->
+    <div id="linkModal" class="modal">
+        <div class="modal-content">
+            <h3 style="color: var(--gold);">Connection Config</h3>
+            <div style="margin-bottom: 10px;">
+                <button class="btn-link" onclick="setProto('vless')">VLESS</button>
+                <button class="btn-link" onclick="setProto('vmess')">VMess</button>
+                <button class="btn-link" onclick="setProto('trojan')">Trojan</button>
+            </div>
+            <div id="qrcode" style="display: flex; justify-content: center; background: white; padding: 10px; width: fit-content; margin: 10px auto;"></div>
+            <textarea id="configText" readonly></textarea>
+            <button class="btn btn-add" onclick="closeModal()" style="margin-top: 10px;">Close</button>
         </div>
     </div>
 
     <script>
-        const uuid = "<?php echo $uuid; ?>";
-        const host = "<?php echo $domain; ?>";
-        const port = "443";
-        let currentProto = "vless";
+        let currentUuid = '';
+        let currentHost = '';
+        let currentProto = 'vless';
+
+        function showLinks(uuid, host) {
+            currentUuid = uuid;
+            currentHost = host;
+            document.getElementById('linkModal').style.display = 'flex';
+            setProto('vless');
+        }
+
+        function closeModal() {
+            document.getElementById('linkModal').style.display = 'none';
+        }
 
         function setProto(proto) {
             currentProto = proto;
-            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-            event.target.classList.add('active');
             generate();
         }
 
         function generate() {
-            let link = "";
+            const port = "443";
             const path = "/" + currentProto;
+            let link = "";
 
             if (currentProto === "vless") {
-                link = `vless://${uuid}@${host}:${port}?path=${path}&security=tls&encryption=none&type=ws&host=${host}&sni=${host}#${host}-VLESS`;
+                link = `vless://${currentUuid}@${currentHost}:${port}?path=${path}&security=tls&encryption=none&type=ws&host=${currentHost}&sni=${currentHost}#${currentHost}-VLESS`;
             } else if (currentProto === "trojan") {
-                link = `trojan://${uuid}@${host}:${port}?path=${path}&security=tls&type=ws&host=${host}&sni=${host}#${host}-Trojan`;
+                link = `trojan://${currentUuid}@${currentHost}:${port}?path=${path}&security=tls&type=ws&host=${currentHost}&sni=${currentHost}#${currentHost}-Trojan`;
             } else if (currentProto === "vmess") {
                 const vmessJson = {
-                    v: "2", ps: `${host}-VMess`, add: host, port: port, id: uuid, aid: "0",
-                    scy: "auto", net: "ws", type: "none", host: host, path: path, tls: "tls", sni: host
+                    v: "2", ps: `${currentHost}-VMess`, add: currentHost, port: port, id: currentUuid, aid: "0",
+                    scy: "auto", net: "ws", type: "none", host: currentHost, path: path, tls: "tls", sni: currentHost
                 };
                 link = "vmess://" + btoa(JSON.stringify(vmessJson));
             }
 
-            document.getElementById('link').value = link;
+            document.getElementById('configText').value = link;
             document.getElementById('qrcode').innerHTML = "";
             QRCode.toCanvas(link, { width: 200, margin: 2 }, (err, canvas) => {
                 if(!err) document.getElementById('qrcode').appendChild(canvas);
             });
         }
-
-        generate();
-
-        function copyLink() {
-            const el = document.getElementById('link');
-            el.select();
-            document.execCommand('copy');
-            alert("Copied to clipboard!");
-        }
     </script>
 </body>
 </html>
 PHP
-
-# Save UUID for PHP to read and secure it
-echo "$UUID" > /etc/vpanel_uuid
-chown root:www-data /etc/vpanel_uuid
-chmod 640 /etc/vpanel_uuid
 
 # 6. Configure Nginx to Handle PHP
 echo -e "${YELLOW}[6/6] Configuring Nginx for PHP...${PLAIN}"
@@ -565,5 +549,5 @@ echo -e "${GREEN}==========================================${PLAIN}"
 echo -e "${GREEN}       PREMIUM VPN PANEL INSTALLED!       ${PLAIN}"
 echo -e "${GREEN}==========================================${PLAIN}"
 echo -e "URL:  https://$DOMAIN"
-echo -e "Pass: $UUID"
+echo -e "Pass: $UUID (Admin Key)"
 echo -e "=========================================="
