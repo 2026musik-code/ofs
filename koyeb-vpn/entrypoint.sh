@@ -29,8 +29,8 @@ envsubst < /etc/xray/config.json.template > /etc/xray/config.json
 envsubst '${PORT}' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
 
 # Configure HTML
-# Substitute $UUID
-envsubst < /www/index.html.template > /www/index.html
+# Crucial: Only substitute $UUID to avoid breaking JS Template Literals (${uuid}, etc)
+envsubst '$UUID' < /www/index.html.template > /www/index.html
 
 # Start Xray
 echo "Starting Xray..."
