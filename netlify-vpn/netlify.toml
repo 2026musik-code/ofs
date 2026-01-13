@@ -1,6 +1,0 @@
-[build]
-  publish = "public"
-
-[[edge_functions]]
-  function = "vpn"
-  path = "/vpn"
