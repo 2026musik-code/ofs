@@ -1,41 +1,68 @@
-# Koyeb Xray VPN (Docker)
+# Universal Xray VPN (Koyeb / VPS)
 
-This project deploys a full-featured VPN node (Xray-core) on **Koyeb** using Docker.
+This project deploys a full-featured VPN node (Xray-core) using Docker. It is optimized for **Koyeb** but works perfectly on any **VPS**.
 
 ## Features
-- **Protocols:**
-  - **VLESS** + WebSocket + TLS
-  - **VMess** + WebSocket + TLS
-  - **Trojan** + WebSocket + TLS
-- **Dashboard:** A web-based dashboard to view your `UUID` and generate connection links (QR Code/Text).
-- **Security:** Dashboard protected by HTTP Basic Auth.
-- **Architecture:** `Nginx` (Frontend/Proxy) -> `Xray` (Backend).
+- **Protocols:** VLESS, VMess, Trojan (WebSocket + TLS).
+- **Dashboard:** Web interface to manage credentials (protected by Basic Auth).
+- **Architecture:** Nginx (Proxy) -> Xray (Core).
 
-## Deployment Guide (Koyeb)
+---
 
-1.  **Fork** this repository to your GitHub.
-2.  Login to [Koyeb](https://app.koyeb.com/).
-3.  Click **Create App**.
-4.  Select **GitHub** as the deployment method.
-5.  Select this repository.
-6.  **Builder:** `Dockerfile` (default).
-7.  **Environment Variables** (Optional):
-    - `UUID`: Your VPN secret. (Default: Randomly generated)
-    - `DASH_USER`: Dashboard username. (Default: `admin`)
-    - `DASH_PASS`: Dashboard password. (Default: Same as `UUID`)
-8.  **Exposed Ports:**
-    - Port `8000` (HTTP). *Koyeb will map this to HTTPS (443) automatically.*
-9.  **Deploy**.
+## Option 1: Deploy on Koyeb (Serverless)
+1.  **Fork** this repository.
+2.  Create a new App on [Koyeb](https://app.koyeb.com/).
+3.  Select **GitHub** source -> This repo.
+4.  **Builder:** Dockerfile.
+5.  **Env Vars:** `UUID`, `DASH_USER`, `DASH_PASS` (Optional).
+6.  **Deploy**.
+7.  *SSL is automatic on Koyeb.*
 
-## How to Use
-1.  Open your App URL (e.g., `https://my-app.koyeb.app`).
-2.  **Login:**
-    - User: `admin` (or what you set in `DASH_USER`)
-    - Pass: Your `UUID` (or what you set in `DASH_PASS`)
-    - *Note: Check build logs if you used a random UUID.*
-3.  Copy the **VLESS / VMess / Trojan** links.
-4.  Import the link into your client (v2rayNG, NekoBox, Shadowrocket, etc.).
+---
+
+## Option 2: Deploy on VPS (Docker)
+Works on Ubuntu, Debian, CentOS, etc.
+
+### 1. Install Docker
+```bash
+curl -fsSL https://get.docker.com | sh
+```
+
+### 2. Clone & Run
+```bash
+git clone <your-repo-url> vpn
+cd vpn/koyeb-vpn
+```
+
+### 3. Start (HTTP Only)
+By default, this runs on Port 80.
+```bash
+docker compose up -d
+```
+*Note: Without a domain and SSL certificate, clients must use `allowInsecure: true` or `encryption: none`.*
+
+### 4. Enable HTTPS (Recommended)
+To get real TLS (SSL), use **Caddy** as a reverse proxy in front of Docker.
+
+1.  **Install Caddy:** [Instructions](https://caddyserver.com/docs/install)
+2.  **Configure Caddyfile:**
+    ```caddy
+    your-domain.com {
+        reverse_proxy localhost:80
+    }
+    ```
+3.  **Run Caddy:** `caddy run`
+4.  Now your VPN works over `https://your-domain.com`.
+
+---
+
+## Configuration Variables
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `UUID` | Main VPN Secret | Random Generated |
+| `DASH_USER` | Dashboard Username | `admin` |
+| `DASH_PASS` | Dashboard Password | Same as UUID |
 
 ## Troubleshooting
-- **Connection Failed?** Ensure your client has `TLS` enabled (SNI = your app domain).
-- **Forgot Password?** Check the Koyeb "Runtime Logs" to see the generated UUID/Password at startup.
+- **Logs:** `docker logs -f xray-vpn` (VPS) or Runtime Logs (Koyeb).
+- **Time Sync:** Xray requires correct server time. Ensure your VPS time is synced.
