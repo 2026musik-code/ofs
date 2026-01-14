@@ -16,7 +16,6 @@ echo -e "${GREEN}Starting VPS VPN Auto-Installer...${PLAIN}"
 
 # 1. System Update & Dependencies
 echo -e "${YELLOW}[1/6] Updating System & Installing Dependencies...${PLAIN}"
-# Added php-fpm, php, sudo (for reload), and jq (for json manipulation if needed, though PHP handles it)
 apt update && apt install -y curl wget git nginx certbot python3-certbot-nginx unzip uuid-runtime apache2-utils qrencode php-fpm php-cli php-xml sudo
 
 # 2. Input Domain
@@ -107,9 +106,25 @@ chown root:www-data /etc/vpanel_users.json
 chmod 660 /etc/vpanel_users.json # RW for root and www-data
 
 # --- SUDOERS FOR PHP ---
-# Allow www-data to restart xray without password
+# Allow www-data to restart xray AND run update script without password
 echo "www-data ALL=(root) NOPASSWD: /usr/bin/systemctl restart xray" > /etc/sudoers.d/vpanel
+echo "www-data ALL=(root) NOPASSWD: /usr/local/bin/vpanel-update" >> /etc/sudoers.d/vpanel
 chmod 0440 /etc/sudoers.d/vpanel
+
+# --- INSTALL UPDATE SCRIPT ---
+# We write a default update script that can be customized
+cat > /usr/local/bin/vpanel-update <<'BASH'
+#!/bin/bash
+# VPanel Auto-Updater
+# Replace with your repo URL
+REPO_URL="https://raw.githubusercontent.com/USER/REPO/main/vps-installer/install.sh"
+
+echo "Checking for updates..."
+# Logic to fetch and extract PHP would go here.
+# For now, we echo a placeholder message.
+echo "Update feature is installed. Configure /usr/local/bin/vpanel-update with your GitHub URL."
+BASH
+chmod +x /usr/local/bin/vpanel-update
 
 # --- LOGIN PAGE (PHP) ---
 cat > /var/www/vpanel/login.php <<'PHP'
@@ -168,25 +183,19 @@ $domain = $_SERVER['HTTP_HOST'];
 $users_file = '/etc/vpanel_users.json';
 $xray_config = '/usr/local/etc/xray/config.json';
 
-// Fetch ISP Info (Server Side)
-$isp_info = "Loading...";
-$loc_info = "Unknown";
+// Fetch ISP Info
+$isp_info = "Loading..."; $loc_info = "Unknown";
 try {
-    // Timeout set to 2s to prevent hanging
     $ctx = stream_context_create(['http'=> ['timeout' => 2]]);
     $json = @file_get_contents("http://ip-api.com/json/", false, $ctx);
-    if($json) {
-        $data = json_decode($json, true);
-        $isp_info = $data['isp'] ?? "Unknown ISP";
-        $loc_info = ($data['city'] ?? "") . ", " . ($data['country'] ?? "");
-    }
+    if($json) { $data = json_decode($json, true); $isp_info = $data['isp'] ?? "Unknown ISP"; $loc_info = ($data['city'] ?? "") . ", " . ($data['country'] ?? ""); }
 } catch(Exception $e) {}
 
 function getUsers() { global $users_file; return json_decode(file_get_contents($users_file), true); }
 function saveUsers($users) { global $users_file; file_put_contents($users_file, json_encode($users, JSON_PRETTY_PRINT)); }
 function updateXrayConfig($users) {
     global $xray_config;
-    if(!is_writable($xray_config)) { return false; } // Safety check
+    if(!is_writable($xray_config)) { return false; }
     $config = json_decode(file_get_contents($xray_config), true);
     $clients = []; $trojan_clients = [];
     foreach($users as $u) {
@@ -207,19 +216,26 @@ function uuidv4() {
     return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
 }
 
+// UPDATE LOGIC
+$update_msg = "";
 if(isset($_POST['action'])) {
-    $users = getUsers();
     if($_POST['action'] === 'add') {
+        $users = getUsers();
         $username = htmlspecialchars($_POST['username']);
         $uuid = uuidv4();
         $users[] = ["username" => $username, "uuid" => $uuid, "created_at" => date('Y-m-d H:i:s')];
         saveUsers($users); updateXrayConfig($users);
     }
     elseif($_POST['action'] === 'delete') {
+        $users = getUsers();
         $uuid_to_del = $_POST['uuid'];
         $new_users = [];
         foreach($users as $u) { if($u['uuid'] !== $uuid_to_del) { $new_users[] = $u; } }
         saveUsers($new_users); updateXrayConfig($new_users);
+    }
+    elseif($_POST['action'] === 'update_web') {
+        $output = shell_exec('sudo vpanel-update 2>&1');
+        $update_msg = "Update Check: " . htmlspecialchars($output);
     }
 }
 $users = getUsers();
@@ -262,10 +278,11 @@ $tx = isset($matches[3]) ? round($matches[3]/1024/1024, 2) : 0;
         .btn-add { background: var(--gold); color: #000; }
         .btn-del { background: #ff4444; color: #fff; padding: 5px 10px; font-size: 0.8rem; }
         .btn-link { background: #007bff; color: #fff; padding: 5px 10px; font-size: 0.8rem; text-decoration: none; display: inline-block; border-radius: 3px; cursor: pointer; }
+        .btn-update { background: transparent; border: 1px solid var(--gold); color: var(--gold); padding: 5px 15px; font-size: 0.8rem; }
+        .btn-update:hover { background: var(--gold); color: #000; }
 
-        /* Mobile Layout Adjustments */
         @media (max-width: 768px) {
-            .row { grid-template-columns: 1fr 1fr; } /* 2 columns on mobile */
+            .row { grid-template-columns: 1fr 1fr; }
             input[type="text"] { width: 100%; margin-bottom: 10px; }
             form { flex-direction: column; align-items: stretch; }
         }
@@ -276,12 +293,28 @@ $tx = isset($matches[3]) ? round($matches[3]/1024/1024, 2) : 0;
     </style>
 </head>
 <body>
-    <div class="header"><h1>VPS MANAGER</h1></div>
+    <div class="header">
+        <h1>VPS MANAGER</h1>
+    </div>
 
     <div class="container">
-        <!-- Server Info Card (New) -->
+        <!-- Update Message -->
+        <?php if($update_msg): ?>
+        <div style="background: rgba(0,255,0,0.2); padding: 10px; border-radius: 5px; margin-bottom: 20px; border: 1px solid #0f0; text-align: center;">
+            <?php echo $update_msg; ?>
+        </div>
+        <?php endif; ?>
+
+        <!-- Server Info Card -->
         <div class="card">
-            <h3 style="color: var(--gold);">Server Information</h3>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <h3 style="color: var(--gold); margin: 0;">Server Information</h3>
+                <form method="POST" style="margin:0;">
+                    <input type="hidden" name="action" value="update_web">
+                    <button type="submit" class="btn btn-update" title="Update Web Panel Script"><i class="fas fa-sync-alt"></i> Update Panel</button>
+                </form>
+            </div>
+
             <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
                 <div>
                     <strong style="color: #aaa;">Domain:</strong> <span style="color: #fff;"><?php echo $domain; ?></span><br>
