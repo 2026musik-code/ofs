@@ -16,7 +16,6 @@ echo -e "${GREEN}Starting VPS VPN Auto-Installer...${PLAIN}"
 
 # 1. System Update & Dependencies
 echo -e "${YELLOW}[1/6] Updating System & Installing Dependencies...${PLAIN}"
-# Added php-fpm, php, sudo (for reload), and jq (for json manipulation if needed, though PHP handles it)
 apt update && apt install -y curl wget git nginx certbot python3-certbot-nginx unzip uuid-runtime apache2-utils qrencode php-fpm php-cli php-xml sudo cron
 
 # 2. Input Domain
@@ -116,11 +115,32 @@ chmod 0440 /etc/sudoers.d/vpanel
 cat > /usr/local/bin/vpanel-update <<'BASH'
 #!/bin/bash
 # VPanel Auto-Updater
-# Replace with your repo URL
-REPO_URL="https://raw.githubusercontent.com/USER/REPO/main/vps-installer/install.sh"
+# Fetches install.sh from repo and extracts the PHP Dashboard parts
+
+REPO_URL="https://raw.githubusercontent.com/2026musik-code/ofs/main/vps-installer/install.sh"
+TEMP_FILE="/tmp/vpanel_install_update.sh"
 
 echo "Checking for updates..."
-echo "Update feature is installed. Configure /usr/local/bin/vpanel-update with your GitHub URL."
+
+# 1. Download the latest install script
+if curl -s -f -o "$TEMP_FILE" "$REPO_URL"; then
+    echo "Download success."
+
+    # 2. Extract index.php
+    # We use sed to grab content between the cat HEREDOC markers
+    # Pattern: from "cat > /var/www/vpanel/index.php <<'PHP'" to "^PHP$"
+    # Then remove the first and last line (the markers themselves)
+    sed -n "/cat > \/var\/www\/vpanel\/index.php <<'PHP'/,/^PHP$/p" "$TEMP_FILE" | sed '1d;$d' > /var/www/vpanel/index.php
+
+    # 3. Extract login.php (Just in case)
+    sed -n "/cat > \/var\/www\/vpanel\/login.php <<'PHP'/,/^PHP$/p" "$TEMP_FILE" | sed '1d;$d' > /var/www/vpanel/login.php
+
+    echo "Dashboard updated successfully!"
+    rm -f "$TEMP_FILE"
+else
+    echo "Error: Failed to download update script from GitHub."
+    exit 1
+fi
 BASH
 chmod +x /usr/local/bin/vpanel-update
 
@@ -281,6 +301,7 @@ if(isset($_POST['action'])) {
         $uuid = uuidv4();
         $users[] = ["username" => $username, "uuid" => $uuid, "created_at" => date('Y-m-d H:i:s'), "exp_date" => $exp_date];
         saveUsers($users); updateXrayConfig($users);
+        header("Location: " . $_SERVER['PHP_SELF']); exit; // PRG Fix
     }
     elseif($_POST['action'] === 'delete') {
         $users = getUsers();
@@ -288,6 +309,7 @@ if(isset($_POST['action'])) {
         $new_users = [];
         foreach($users as $u) { if($u['uuid'] !== $uuid_to_del) { $new_users[] = $u; } }
         saveUsers($new_users); updateXrayConfig($new_users);
+        header("Location: " . $_SERVER['PHP_SELF']); exit; // PRG Fix
     }
     elseif($_POST['action'] === 'update_web') {
         $output = shell_exec('sudo vpanel-update 2>&1');
@@ -406,7 +428,7 @@ $tx = isset($matches[3]) ? round($matches[3]/1024/1024, 2) : 0;
         <!-- Add User -->
         <div class="card">
             <h3 style="color: var(--gold);">Create New User</h3>
-            <form method="POST" style="display: flex; gap: 10px; align-items: center;">
+            <form method="POST">
                 <input type="hidden" name="action" value="add">
                 <input type="text" name="username" placeholder="Username" required style="flex:2;">
                 <select name="days" required style="flex:1;">
