@@ -1,36 +1,28 @@
 #!/bin/bash
+# VPanel Auto-Updater
+# Fetches install.sh from repo and extracts the PHP Dashboard parts
 
-# Update Script for VPanel
-# Usage: sudo vpanel-update
+REPO_URL="https://raw.githubusercontent.com/2026musik-code/ofs/main/vps-installer/install.sh"
+TEMP_FILE="/tmp/vpanel_install_update.sh"
 
-REPO_RAW="https://raw.githubusercontent.com/USER/REPO/main/vps-installer/install.sh"
-# NOTE: Since the index.php is embedded in install.sh, updating means extracting it or downloading individual files if they were hosted separately.
-# However, as per current design, everything is in install.sh.
-# The user asked for an "Update" button that updates the Web Panel.
-# Best approach: Download the latest install.sh, extract the PHP parts, and overwrite /var/www/vpanel/index.php.
+echo "Checking for updates..."
 
-# For this implementation, since I cannot guarantee the repo URL structure of the user fork,
-# I will simulate the update by re-downloading the index.php from the source provided in the environment or a fixed URL if the user provides it.
-# But better: The "Update" button should pull `index.php` from the repository directly.
+# 1. Download the latest install script
+if curl -s -f -o "$TEMP_FILE" "$REPO_URL"; then
+    echo "Download success."
 
-# Let's assume the user has this repo. We will fetch `install.sh` and extract the HEREDOC content for index.php.
+    # 2. Extract index.php
+    # We use sed to grab content between the cat HEREDOC markers
+    # Pattern: from "cat > /var/www/vpanel/index.php <<'PHP'" to "^PHP$"
+    # Then remove the first and last line (the markers themselves)
+    sed -n "/cat > \/var\/www\/vpanel\/index.php <<'PHP'/,/^PHP$/p" "$TEMP_FILE" | sed '1d;$d' > /var/www/vpanel/index.php
 
-echo "Updating VPanel..."
+    # 3. Extract login.php (Just in case)
+    sed -n "/cat > \/var\/www\/vpanel\/login.php <<'PHP'/,/^PHP$/p" "$TEMP_FILE" | sed '1d;$d' > /var/www/vpanel/login.php
 
-# 1. Backup old config
-cp /var/www/vpanel/index.php /var/www/vpanel/index.php.bak
-
-# 2. Fetch latest index.php content (Simulated logic or real fetch)
-# In a real scenario, we would do:
-# wget -O /var/www/vpanel/index.php https://raw.githubusercontent.com/YOUR_USER/YOUR_REPO/main/web/index.php
-# But since we use a single file installer, we need a way to get just the PHP.
-
-# TO MAKE THIS WORK SEAMLESSLY: I will separate the PHP files in the repo for easier updates in the future.
-# But for now, I will create a placeholder update script that the user can configure.
-
-echo "Update feature requires a configured repository URL."
-echo "Please edit /usr/local/bin/vpanel-update with your GitHub Raw URL."
-
-# For now, we just touch the file to simulate activity
-touch /var/www/vpanel/index.php
-echo "Update check complete."
+    echo "Dashboard updated successfully!"
+    rm -f "$TEMP_FILE"
+else
+    echo "Error: Failed to download update script from GitHub."
+    exit 1
+fi
