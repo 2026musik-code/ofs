@@ -85,6 +85,10 @@ cat > /usr/local/etc/xray/config.json <<EOF
 }
 EOF
 
+# Set Permissions for Xray Config (So PHP can write to it)
+chown root:www-data /usr/local/etc/xray/config.json
+chmod 664 /usr/local/etc/xray/config.json
+
 # Restart Xray
 systemctl restart xray
 systemctl enable xray
@@ -111,8 +115,6 @@ chmod 0440 /etc/sudoers.d/vpanel
 cat > /var/www/vpanel/login.php <<'PHP'
 <?php
 session_start();
-// Default Admin Login (using the first user's UUID or a separate admin pass)
-// For simplicity, we use the Admin UUID (first user) as the login key
 $users_file = '/etc/vpanel_users.json';
 $users = json_decode(file_get_contents($users_file), true);
 $admin_uuid = $users[0]['uuid'] ?? '';
@@ -134,51 +136,11 @@ if(isset($_POST['password'])) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Premium Login</title>
     <style>
-        body {
-            margin: 0;
-            padding: 0;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #0f0c29;
-            background: linear-gradient(to right, #24243e, #302b63, #0f0c29);
-            height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            color: #fff;
-        }
-        .login-card {
-            background: rgba(255, 255, 255, 0.05);
-            backdrop-filter: blur(10px);
-            padding: 40px;
-            border-radius: 15px;
-            box-shadow: 0 15px 25px rgba(0,0,0,0.6);
-            width: 300px;
-            text-align: center;
-            border: 1px solid rgba(255, 215, 0, 0.2);
-        }
+        body { margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0f0c29; background: linear-gradient(to right, #24243e, #302b63, #0f0c29); height: 100vh; display: flex; justify-content: center; align-items: center; color: #fff; }
+        .login-card { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(10px); padding: 40px; border-radius: 15px; box-shadow: 0 15px 25px rgba(0,0,0,0.6); width: 300px; text-align: center; border: 1px solid rgba(255, 215, 0, 0.2); }
         h2 { margin-bottom: 30px; color: #ffd700; text-transform: uppercase; letter-spacing: 2px; }
-        input[type="password"] {
-            width: 100%;
-            padding: 10px 0;
-            font-size: 16px;
-            color: #fff;
-            margin-bottom: 30px;
-            border: none;
-            border-bottom: 1px solid #fff;
-            outline: none;
-            background: transparent;
-        }
-        button {
-            background: linear-gradient(45deg, #ffd700, #fdb931);
-            border: none;
-            padding: 10px 20px;
-            cursor: pointer;
-            border-radius: 5px;
-            color: #000;
-            font-weight: bold;
-            width: 100%;
-            transition: 0.3s;
-        }
+        input[type="password"] { width: 100%; padding: 10px 0; font-size: 16px; color: #fff; margin-bottom: 30px; border: none; border-bottom: 1px solid #fff; outline: none; background: transparent; }
+        button { background: linear-gradient(45deg, #ffd700, #fdb931); border: none; padding: 10px 20px; cursor: pointer; border-radius: 5px; color: #000; font-weight: bold; width: 100%; transition: 0.3s; }
         button:hover { transform: scale(1.05); box-shadow: 0 0 15px #ffd700; }
         .error { color: #ff4444; font-size: 12px; margin-bottom: 15px; }
     </style>
@@ -200,50 +162,44 @@ PHP
 cat > /var/www/vpanel/index.php <<'PHP'
 <?php
 session_start();
-if(!isset($_SESSION['logged_in'])) {
-    header('Location: login.php');
-    exit;
-}
+if(!isset($_SESSION['logged_in'])) { header('Location: login.php'); exit; }
 
 $domain = $_SERVER['HTTP_HOST'];
 $users_file = '/etc/vpanel_users.json';
 $xray_config = '/usr/local/etc/xray/config.json';
 
-// --- Functions ---
-function getUsers() {
-    global $users_file;
-    return json_decode(file_get_contents($users_file), true);
-}
+// Fetch ISP Info (Server Side)
+$isp_info = "Loading...";
+$loc_info = "Unknown";
+try {
+    // Timeout set to 2s to prevent hanging
+    $ctx = stream_context_create(['http'=> ['timeout' => 2]]);
+    $json = @file_get_contents("http://ip-api.com/json/", false, $ctx);
+    if($json) {
+        $data = json_decode($json, true);
+        $isp_info = $data['isp'] ?? "Unknown ISP";
+        $loc_info = ($data['city'] ?? "") . ", " . ($data['country'] ?? "");
+    }
+} catch(Exception $e) {}
 
-function saveUsers($users) {
-    global $users_file;
-    file_put_contents($users_file, json_encode($users, JSON_PRETTY_PRINT));
-}
-
+function getUsers() { global $users_file; return json_decode(file_get_contents($users_file), true); }
+function saveUsers($users) { global $users_file; file_put_contents($users_file, json_encode($users, JSON_PRETTY_PRINT)); }
 function updateXrayConfig($users) {
     global $xray_config;
+    if(!is_writable($xray_config)) { return false; } // Safety check
     $config = json_decode(file_get_contents($xray_config), true);
-
-    // Generate clients array
-    $clients = [];
-    $trojan_clients = [];
+    $clients = []; $trojan_clients = [];
     foreach($users as $u) {
         $clients[] = ["id" => $u['uuid'], "email" => $u['username']];
         $trojan_clients[] = ["password" => $u['uuid'], "email" => $u['username']];
     }
-
-    // Update Inbounds
-    // 0: VLESS, 1: VMess, 2: Trojan
     $config['inbounds'][0]['settings']['clients'] = $clients;
     $config['inbounds'][1]['settings']['clients'] = $clients;
     $config['inbounds'][2]['settings']['clients'] = $trojan_clients;
-
     file_put_contents($xray_config, json_encode($config, JSON_PRETTY_PRINT));
-
-    // Restart Xray
     shell_exec('sudo systemctl restart xray');
+    return true;
 }
-
 function uuidv4() {
     $data = random_bytes(16);
     $data[6] = chr(ord($data[6]) & 0x0f | 0x40);
@@ -251,40 +207,26 @@ function uuidv4() {
     return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
 }
 
-// --- Actions ---
 if(isset($_POST['action'])) {
     $users = getUsers();
-
     if($_POST['action'] === 'add') {
         $username = htmlspecialchars($_POST['username']);
         $uuid = uuidv4();
-        $users[] = [
-            "username" => $username,
-            "uuid" => $uuid,
-            "created_at" => date('Y-m-d H:i:s')
-        ];
-        saveUsers($users);
-        updateXrayConfig($users);
+        $users[] = ["username" => $username, "uuid" => $uuid, "created_at" => date('Y-m-d H:i:s')];
+        saveUsers($users); updateXrayConfig($users);
     }
     elseif($_POST['action'] === 'delete') {
         $uuid_to_del = $_POST['uuid'];
         $new_users = [];
-        foreach($users as $u) {
-            if($u['uuid'] !== $uuid_to_del) {
-                $new_users[] = $u;
-            }
-        }
-        saveUsers($new_users);
-        updateXrayConfig($new_users);
+        foreach($users as $u) { if($u['uuid'] !== $uuid_to_del) { $new_users[] = $u; } }
+        saveUsers($new_users); updateXrayConfig($new_users);
     }
 }
-
 $users = getUsers();
 
-// Stats logic (Same as before)
+// Stats
 $load = sys_getloadavg(); $cpu_load = $load[0] * 100;
-$free = shell_exec('free -m');
-$free_arr = explode("\n", trim($free));
+$free = shell_exec('free -m'); $free_arr = explode("\n", trim($free));
 $mem = array_merge(array_filter(explode(" ", $free_arr[1])));
 $mem_percent = round(($mem[2] / $mem[1]) * 100);
 $net = file_get_contents('/proc/net/dev');
@@ -296,6 +238,7 @@ $tx = isset($matches[3]) ? round($matches[3]/1024/1024, 2) : 0;
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VPN Admin Panel</title>
     <script src="https://cdn.jsdelivr.net/npm/qrcode@1.4.4/build/qrcode.min.js"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
@@ -306,8 +249,7 @@ $tx = isset($matches[3]) ? round($matches[3]/1024/1024, 2) : 0;
         h1 { margin: 0; color: var(--gold); letter-spacing: 2px; }
         .container { max-width: 1000px; margin: 30px auto; padding: 0 20px; }
         .card { background: var(--card-bg); backdrop-filter: blur(10px); border-radius: 15px; padding: 20px; border: 1px solid rgba(255,255,255,0.1); margin-bottom: 20px; }
-        .row { display: flex; gap: 20px; flex-wrap: wrap; }
-        .col { flex: 1; min-width: 250px; }
+        .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; }
         .stat-val { font-size: 1.5rem; color: #fff; font-weight: bold; }
 
         table { width: 100%; border-collapse: collapse; margin-top: 20px; }
@@ -321,7 +263,13 @@ $tx = isset($matches[3]) ? round($matches[3]/1024/1024, 2) : 0;
         .btn-del { background: #ff4444; color: #fff; padding: 5px 10px; font-size: 0.8rem; }
         .btn-link { background: #007bff; color: #fff; padding: 5px 10px; font-size: 0.8rem; text-decoration: none; display: inline-block; border-radius: 3px; cursor: pointer; }
 
-        /* Modal for QR */
+        /* Mobile Layout Adjustments */
+        @media (max-width: 768px) {
+            .row { grid-template-columns: 1fr 1fr; } /* 2 columns on mobile */
+            input[type="text"] { width: 100%; margin-bottom: 10px; }
+            form { flex-direction: column; align-items: stretch; }
+        }
+
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; justify-content: center; align-items: center; }
         .modal-content { background: #222; padding: 30px; border-radius: 10px; text-align: center; max-width: 500px; width: 90%; }
         textarea { width: 100%; height: 100px; background: #111; color: #0f0; border: none; padding: 10px; margin-top: 10px; }
@@ -331,17 +279,32 @@ $tx = isset($matches[3]) ? round($matches[3]/1024/1024, 2) : 0;
     <div class="header"><h1>VPS MANAGER</h1></div>
 
     <div class="container">
+        <!-- Server Info Card (New) -->
+        <div class="card">
+            <h3 style="color: var(--gold);">Server Information</h3>
+            <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
+                <div>
+                    <strong style="color: #aaa;">Domain:</strong> <span style="color: #fff;"><?php echo $domain; ?></span><br>
+                    <strong style="color: #aaa;">ISP:</strong> <span style="color: #fff;"><?php echo $isp_info; ?></span>
+                </div>
+                <div style="text-align: right;">
+                    <strong style="color: #aaa;">Location:</strong> <span style="color: #fff;"><?php echo $loc_info; ?></span><br>
+                    <strong style="color: #aaa;">IP:</strong> <span style="color: #fff;"><?php echo $_SERVER['SERVER_ADDR']; ?></span>
+                </div>
+            </div>
+        </div>
+
         <!-- Stats -->
         <div class="row">
-            <div class="col card">
+            <div class="card">
                 <h3>CPU Load</h3>
                 <div class="stat-val"><?php echo round($cpu_load,1); ?>%</div>
             </div>
-            <div class="col card">
+            <div class="card">
                 <h3>RAM Usage</h3>
                 <div class="stat-val"><?php echo $mem_percent; ?>%</div>
             </div>
-            <div class="col card">
+            <div class="card">
                 <h3>Total Traffic</h3>
                 <div class="stat-val"><?php echo $rx + $tx; ?> MB</div>
             </div>
@@ -350,7 +313,7 @@ $tx = isset($matches[3]) ? round($matches[3]/1024/1024, 2) : 0;
         <!-- Add User -->
         <div class="card">
             <h3 style="color: var(--gold);">Create New User</h3>
-            <form method="POST" style="display: flex; gap: 10px; align-items: center;">
+            <form method="POST">
                 <input type="hidden" name="action" value="add">
                 <input type="text" name="username" placeholder="Username" required>
                 <button type="submit" class="btn btn-add"><i class="fas fa-plus"></i> Generate Account</button>
@@ -360,35 +323,37 @@ $tx = isset($matches[3]) ? round($matches[3]/1024/1024, 2) : 0;
         <!-- User List -->
         <div class="card">
             <h3 style="color: var(--gold);">User Management</h3>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Username</th>
-                        <th>UUID</th>
-                        <th>Created</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php foreach($users as $u): ?>
-                    <tr>
-                        <td><?php echo htmlspecialchars($u['username']); ?></td>
-                        <td style="font-family: monospace; font-size: 0.9rem;"><?php echo $u['uuid']; ?></td>
-                        <td style="font-size: 0.8rem; color: #aaa;"><?php echo $u['created_at']; ?></td>
-                        <td>
-                            <button class="btn-link" onclick="showLinks('<?php echo $u['uuid']; ?>', '<?php echo $domain; ?>')">Links</button>
-                            <?php if($u['username'] !== 'admin'): ?>
-                            <form method="POST" style="display:inline;" onsubmit="return confirm('Delete user?');">
-                                <input type="hidden" name="action" value="delete">
-                                <input type="hidden" name="uuid" value="<?php echo $u['uuid']; ?>">
-                                <button type="submit" class="btn btn-del">Delete</button>
-                            </form>
-                            <?php endif; ?>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
+            <div style="overflow-x: auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Username</th>
+                            <th>UUID</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach($users as $u): ?>
+                        <tr>
+                            <td><?php echo htmlspecialchars($u['username']); ?></td>
+                            <td style="font-family: monospace; font-size: 0.9rem;"><?php echo $u['uuid']; ?></td>
+                            <td style="font-size: 0.8rem; color: #aaa;"><?php echo $u['created_at']; ?></td>
+                            <td>
+                                <button class="btn-link" onclick="showLinks('<?php echo $u['uuid']; ?>', '<?php echo $domain; ?>')">Links</button>
+                                <?php if($u['username'] !== 'admin'): ?>
+                                <form method="POST" style="display:inline;" onsubmit="return confirm('Delete user?');">
+                                    <input type="hidden" name="action" value="delete">
+                                    <input type="hidden" name="uuid" value="<?php echo $u['uuid']; ?>">
+                                    <button type="submit" class="btn btn-del">Delete</button>
+                                </form>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
 
