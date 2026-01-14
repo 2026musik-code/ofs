@@ -301,98 +301,183 @@ $ip_info = json_decode(file_get_contents("http://ip-api.com/json/"), true);
 <head>
     <title>Admin Panel</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        body { font-family: sans-serif; background: #121212; color: #e0e0e0; padding: 20px; }
-        .container { max-width: 800px; margin: 0 auto; }
-        .card { background: #1e1e1e; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #333; }
-        h2 { color: #ffd700; border-bottom: 1px solid #333; padding-bottom: 10px; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #333; }
-        th { color: #ffd700; }
-        button { padding: 8px 15px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
-        .btn-green { background: #28a745; color: #fff; }
-        .btn-red { background: #dc3545; color: #fff; }
-        .btn-blue { background: #007bff; color: #fff; }
-        .btn-logout { background: #555; color: #fff; float: right; }
+        body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; margin: 0; padding: 15px; }
+        .container { max-width: 900px; margin: 0 auto; padding-bottom: 60px; }
+        .header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #333; padding-bottom: 15px; }
+        h1 { color: #ffd700; margin: 0; font-size: 1.5rem; }
+
+        .card { background: #1e1e1e; padding: 20px; border-radius: 12px; margin-bottom: 20px; border: 1px solid #333; box-shadow: 0 4px 10px rgba(0,0,0,0.2); }
+        .card h2 { color: #ffd700; margin-top: 0; font-size: 1.2rem; border-bottom: 1px solid #333; padding-bottom: 10px; margin-bottom: 15px; display: flex; align-items: center; gap: 10px; }
+
+        /* Stats Grid */
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 15px; }
+        .stat-item { background: #252525; padding: 15px; border-radius: 8px; text-align: center; }
+        .stat-val { display: block; font-size: 1.1rem; font-weight: bold; color: #fff; margin-top: 5px; }
+        .stat-label { font-size: 0.85rem; color: #888; }
+
+        /* Tables */
+        .table-responsive { overflow-x: auto; border-radius: 8px; border: 1px solid #333; }
+        table { width: 100%; border-collapse: collapse; min-width: 600px; }
+        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #333; font-size: 0.9rem; }
+        th { background: #252525; color: #ffd700; font-weight: 600; white-space: nowrap; }
+        tr:last-child td { border-bottom: none; }
+        tr:hover td { background: #252525; }
+
+        /* Buttons */
+        button { border: none; border-radius: 6px; cursor: pointer; font-weight: 600; transition: 0.2s; padding: 8px 12px; }
+        .btn-sm { padding: 6px 10px; font-size: 0.85rem; }
+        .btn-green { background: #28a745; color: white; width: 100%; padding: 12px; font-size: 1rem; }
+        .btn-green:hover { background: #218838; }
+        .btn-red { background: #dc3545; color: white; }
+        .btn-red:hover { background: #c82333; }
+        .btn-blue { background: #007bff; color: white; }
+        .btn-logout { background: #444; color: #ccc; padding: 8px 15px; }
+        .btn-logout:hover { background: #555; color: #fff; }
+
+        .token-text { font-family: monospace; color: #0f0; letter-spacing: 1px; font-size: 1rem; }
+        .pin-text { font-family: monospace; color: #ffd700; font-weight: bold; font-size: 1rem; }
+
+        .nav-link { display: inline-block; margin-top: 20px; color: #aaa; text-decoration: none; border-bottom: 1px solid transparent; transition: 0.2s; }
+        .nav-link:hover { color: #fff; border-bottom-color: #fff; }
     </style>
 </head>
 <body>
     <div class="container">
-        <form method="POST"><input type="hidden" name="action" value="logout"><button class="btn-logout">LOGOUT</button></form>
-        <h1>OWNER DASHBOARD</h1>
-
-        <!-- Stats -->
-        <div class="card">
-            <h2>Server Status</h2>
-            <table>
-                <tr><td>IP Address</td><td><?php echo $ip_info['query'] ?? 'Unknown'; ?></td></tr>
-                <tr><td>ISP / Loc</td><td><?php echo ($ip_info['isp']??'-') . " / " . ($ip_info['country']??'-'); ?></td></tr>
-                <tr><td>Uptime</td><td><?php echo $uptime; ?></td></tr>
-                <tr><td>CPU Load</td><td><?php echo implode(", ", $cpu_load); ?></td></tr>
-                <tr><td>RAM Usage</td><td><?php echo $ram_usage; ?>% (<?php echo round($ram_used/1024); ?>MB / <?php echo round($ram_total/1024); ?>MB)</td></tr>
-            </table>
+        <div class="header-bar">
+            <h1>OWNER DASHBOARD</h1>
+            <form method="POST" style="margin:0;">
+                <input type="hidden" name="action" value="logout">
+                <button class="btn-logout"><i class="fas fa-sign-out-alt"></i> Logout</button>
+            </form>
         </div>
 
-        <?php if($update_msg) echo "<div style='background:#333;padding:10px;'>$update_msg</div>"; ?>
+        <?php if($update_msg) echo "<div style='background:#007bff;color:white;padding:15px;border-radius:8px;margin-bottom:20px;'>$update_msg</div>"; ?>
 
-        <!-- Update -->
-        <div class="card" style="text-align:center;">
-            <form method="POST" style="margin:0;">
-                <input type="hidden" name="action" value="update_web">
-                <button type="submit" class="btn-blue">UPDATE WEB PANEL</button>
-            </form>
+        <!-- Server Status -->
+        <div class="card">
+            <h2><i class="fas fa-server"></i> Server Status</h2>
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <span class="stat-label">IP Address</span>
+                    <span class="stat-val"><?php echo $ip_info['query'] ?? 'Unknown'; ?></span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">ISP / Location</span>
+                    <span class="stat-val"><?php echo ($ip_info['isp']??'-') . " / " . ($ip_info['countryCode']??'-'); ?></span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Uptime</span>
+                    <span class="stat-val"><?php echo $uptime; ?></span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">CPU Load</span>
+                    <span class="stat-val"><?php echo $cpu_load[0]; ?></span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">RAM Usage</span>
+                    <span class="stat-val"><?php echo $ram_usage; ?>%</span>
+                    <span class="stat-label" style="font-size:0.7rem;"><?php echo round($ram_used/1024)." / ".round($ram_total/1024)." MB"; ?></span>
+                </div>
+            </div>
+            <div style="margin-top: 15px; text-align: center;">
+                 <form method="POST" style="margin:0;">
+                    <input type="hidden" name="action" value="update_web">
+                    <button type="submit" class="btn-blue btn-sm"><i class="fas fa-sync"></i> Update Web Panel</button>
+                </form>
+            </div>
         </div>
 
         <!-- Token Manager -->
         <div class="card">
-            <h2>1. Generate Token (For Seller/User)</h2>
-            <p>Berikan Token ini ke User untuk membuat akun. Berikan PIN agar mereka bisa lihat config.</p>
+            <h2><i class="fas fa-key"></i> Generate Token</h2>
+            <p style="color:#aaa; font-size:0.9rem; margin-bottom: 15px;">Create a token for a user. They will need the <b>Token</b> to create an account and the <b>PIN</b> to view their config.</p>
+
             <form method="POST">
                 <input type="hidden" name="action" value="generate_token">
-                <button class="btn-green">GENERATE NEW TOKEN</button>
+                <button class="btn-green"><i class="fas fa-plus-circle"></i> GENERATE NEW TOKEN</button>
             </form>
-            <br>
-            <table>
-                <tr><th>Token</th><th>PIN (Owner ID)</th><th>Created</th><th>Action</th></tr>
-                <?php foreach($tokens as $t): ?>
-                <tr>
-                    <td style="font-family:monospace; color:#0f0;"><?php echo $t['token']; ?></td>
-                    <td style="font-weight:bold; color:#ffd700;"><?php echo $t['owner_id']; ?></td>
-                    <td><?php echo $t['created_at']; ?></td>
-                    <td>
-                        <form method="POST" style="margin:0;">
-                            <input type="hidden" name="action" value="delete_token">
-                            <input type="hidden" name="token" value="<?php echo $t['token']; ?>">
-                            <button class="btn-red" style="padding:2px 8px;">X</button>
-                        </form>
-                    </td>
-                </tr>
-                <?php endforeach; ?>
-            </table>
+
+            <h3 style="color:#eee; margin-top:25px; border-bottom:1px solid #333; padding-bottom:5px;">Active Tokens</h3>
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Token</th>
+                            <th>PIN (Owner ID)</th>
+                            <th>Created</th>
+                            <th style="text-align:center;">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if(empty($tokens)): ?>
+                            <tr><td colspan="4" style="text-align:center; color:#666;">No active tokens.</td></tr>
+                        <?php else: ?>
+                            <?php foreach($tokens as $t): ?>
+                            <tr>
+                                <td class="token-text"><?php echo $t['token']; ?></td>
+                                <td class="pin-text"><?php echo $t['owner_id']; ?></td>
+                                <td><?php echo $t['created_at']; ?></td>
+                                <td style="text-align:center;">
+                                    <form method="POST" style="margin:0;" onsubmit="return confirm('Delete this token?');">
+                                        <input type="hidden" name="action" value="delete_token">
+                                        <input type="hidden" name="token" value="<?php echo $t['token']; ?>">
+                                        <button class="btn-red btn-sm"><i class="fas fa-trash"></i></button>
+                                    </form>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
         </div>
 
         <!-- User Manager -->
         <div class="card">
-            <h2>2. Manage Users</h2>
-            <table>
-                <tr><th>Username</th><th>PIN</th><th>Expiry</th><th>Action</th></tr>
-                <?php foreach($users as $u): if($u['username'] == 'admin') continue; ?>
-                <tr>
-                    <td><?php echo $u['username']; ?></td>
-                    <td><?php echo $u['owner_id'] ?? '-'; ?></td>
-                    <td><?php echo $u['exp_date']; ?></td>
-                    <td>
-                        <form method="POST" style="margin:0;">
-                            <input type="hidden" name="action" value="delete_user">
-                            <input type="hidden" name="uuid" value="<?php echo $u['uuid']; ?>">
-                            <button class="btn-red">DELETE</button>
-                        </form>
-                    </td>
-                </tr>
-                <?php endforeach; ?>
-            </table>
+            <h2><i class="fas fa-users"></i> Manage Users</h2>
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Username</th>
+                            <th>PIN</th>
+                            <th>Expiry</th>
+                            <th style="text-align:center;">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php
+                        $user_count = 0;
+                        foreach($users as $u):
+                            if($u['username'] == 'admin') continue;
+                            $user_count++;
+                        ?>
+                        <tr>
+                            <td style="font-weight:bold;"><?php echo $u['username']; ?></td>
+                            <td><?php echo $u['owner_id'] ?? '-'; ?></td>
+                            <td><?php echo $u['exp_date']; ?></td>
+                            <td style="text-align:center;">
+                                <form method="POST" style="margin:0;" onsubmit="return confirm('Delete user <?php echo $u['username']; ?>?');">
+                                    <input type="hidden" name="action" value="delete_user">
+                                    <input type="hidden" name="uuid" value="<?php echo $u['uuid']; ?>">
+                                    <button class="btn-red btn-sm"><i class="fas fa-trash"></i></button>
+                                </form>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                        <?php if($user_count == 0): ?>
+                             <tr><td colspan="4" style="text-align:center; color:#666;">No active users.</td></tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
         </div>
-        <a href="index.php">Go to Public Dashboard</a>
+
+        <div style="text-align:center;">
+            <a href="index.php" class="nav-link"><i class="fas fa-arrow-left"></i> Back to Public Dashboard</a>
+        </div>
     </div>
 </body>
 </html>
