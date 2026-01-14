@@ -16,7 +16,8 @@ echo -e "${GREEN}Starting VPS VPN Auto-Installer...${PLAIN}"
 
 # 1. System Update & Dependencies
 echo -e "${YELLOW}[1/6] Updating System & Installing Dependencies...${PLAIN}"
-apt update && apt install -y curl wget git nginx certbot python3-certbot-nginx unzip uuid-runtime apache2-utils qrencode php-fpm php-cli php-xml sudo
+# Added php-fpm, php, sudo (for reload), and jq (for json manipulation if needed, though PHP handles it)
+apt update && apt install -y curl wget git nginx certbot python3-certbot-nginx unzip uuid-runtime apache2-utils qrencode php-fpm php-cli php-xml sudo cron
 
 # 2. Input Domain
 echo -e "${YELLOW}[2/6] Configuration${PLAIN}"
@@ -100,8 +101,8 @@ mkdir -p /var/www/vpanel
 rm -f /var/www/vpanel/index.html
 
 # --- INITIAL USERS DB ---
-# Initialize users.json with the admin/default account
-echo "[{\"username\":\"admin\",\"uuid\":\"$UUID\",\"created_at\":\"$(date)\"}]" > /etc/vpanel_users.json
+# Initialize users.json with the admin/default account (No Expiry for Admin)
+echo "[{\"username\":\"admin\",\"uuid\":\"$UUID\",\"created_at\":\"$(date)\",\"exp_date\":\"9999-12-31\"}]" > /etc/vpanel_users.json
 chown root:www-data /etc/vpanel_users.json
 chmod 660 /etc/vpanel_users.json # RW for root and www-data
 
@@ -112,7 +113,6 @@ echo "www-data ALL=(root) NOPASSWD: /usr/local/bin/vpanel-update" >> /etc/sudoer
 chmod 0440 /etc/sudoers.d/vpanel
 
 # --- INSTALL UPDATE SCRIPT ---
-# We write a default update script that can be customized
 cat > /usr/local/bin/vpanel-update <<'BASH'
 #!/bin/bash
 # VPanel Auto-Updater
@@ -120,11 +120,64 @@ cat > /usr/local/bin/vpanel-update <<'BASH'
 REPO_URL="https://raw.githubusercontent.com/USER/REPO/main/vps-installer/install.sh"
 
 echo "Checking for updates..."
-# Logic to fetch and extract PHP would go here.
-# For now, we echo a placeholder message.
 echo "Update feature is installed. Configure /usr/local/bin/vpanel-update with your GitHub URL."
 BASH
 chmod +x /usr/local/bin/vpanel-update
+
+# --- INSTALL EXPIRED CHECKER ---
+# Writes the PHP script to a safe location
+cat > /usr/local/bin/vpanel-check-expired.php <<'PHP'
+<?php
+// Check for expired users
+$users_file = '/etc/vpanel_users.json';
+$xray_config = '/usr/local/etc/xray/config.json';
+
+if(!file_exists($users_file)) exit;
+
+$users = json_decode(file_get_contents($users_file), true);
+$today = date('Y-m-d');
+$changed = false;
+$new_users = [];
+
+foreach($users as $u) {
+    if($u['username'] === 'admin') {
+        $new_users[] = $u;
+        continue;
+    }
+
+    // Check expiry
+    if(isset($u['exp_date']) && $u['exp_date'] < $today) {
+        $changed = true;
+        // Logic to log deletion or notify could go here
+    } else {
+        $new_users[] = $u;
+    }
+}
+
+if($changed) {
+    file_put_contents($users_file, json_encode($new_users, JSON_PRETTY_PRINT));
+
+    // Update Xray
+    $config = json_decode(file_get_contents($xray_config), true);
+    $clients = []; $trojan_clients = [];
+    foreach($new_users as $u) {
+        $clients[] = ["id" => $u['uuid'], "email" => $u['username']];
+        $trojan_clients[] = ["password" => $u['uuid'], "email" => $u['username']];
+    }
+    $config['inbounds'][0]['settings']['clients'] = $clients;
+    $config['inbounds'][1]['settings']['clients'] = $clients;
+    $config['inbounds'][2]['settings']['clients'] = $trojan_clients;
+    file_put_contents($xray_config, json_encode($config, JSON_PRETTY_PRINT));
+
+    shell_exec('sudo systemctl restart xray');
+}
+?>
+PHP
+chmod +x /usr/local/bin/vpanel-check-expired.php
+
+# --- CRONJOB ---
+# Run check everyday at 00:00
+(crontab -l 2>/dev/null; echo "0 0 * * * /usr/bin/php /usr/local/bin/vpanel-check-expired.php") | crontab -
 
 # --- LOGIN PAGE (PHP) ---
 cat > /var/www/vpanel/login.php <<'PHP'
@@ -222,8 +275,11 @@ if(isset($_POST['action'])) {
     if($_POST['action'] === 'add') {
         $users = getUsers();
         $username = htmlspecialchars($_POST['username']);
+        $days = (int)$_POST['days'];
+        $exp_date = date('Y-m-d', strtotime("+$days days"));
+
         $uuid = uuidv4();
-        $users[] = ["username" => $username, "uuid" => $uuid, "created_at" => date('Y-m-d H:i:s')];
+        $users[] = ["username" => $username, "uuid" => $uuid, "created_at" => date('Y-m-d H:i:s'), "exp_date" => $exp_date];
         saveUsers($users); updateXrayConfig($users);
     }
     elseif($_POST['action'] === 'delete') {
@@ -273,7 +329,7 @@ $tx = isset($matches[3]) ? round($matches[3]/1024/1024, 2) : 0;
         th { color: var(--gold); text-transform: uppercase; font-size: 0.9rem; }
         tr:hover { background: rgba(255,255,255,0.05); }
 
-        input[type="text"] { background: rgba(0,0,0,0.3); border: 1px solid #444; padding: 10px; color: #fff; border-radius: 5px; width: 200px; }
+        input[type="text"], select { background: rgba(0,0,0,0.3); border: 1px solid #444; padding: 10px; color: #fff; border-radius: 5px; }
         .btn { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
         .btn-add { background: var(--gold); color: #000; }
         .btn-del { background: #ff4444; color: #fff; padding: 5px 10px; font-size: 0.8rem; }
@@ -281,9 +337,13 @@ $tx = isset($matches[3]) ? round($matches[3]/1024/1024, 2) : 0;
         .btn-update { background: transparent; border: 1px solid var(--gold); color: var(--gold); padding: 5px 15px; font-size: 0.8rem; }
         .btn-update:hover { background: var(--gold); color: #000; }
 
+        .badge { padding: 3px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: bold; }
+        .badge-green { background: #28a745; color: #fff; }
+        .badge-red { background: #dc3545; color: #fff; }
+
         @media (max-width: 768px) {
             .row { grid-template-columns: 1fr 1fr; }
-            input[type="text"] { width: 100%; margin-bottom: 10px; }
+            input[type="text"], select { width: 100%; margin-bottom: 10px; }
             form { flex-direction: column; align-items: stretch; }
         }
 
@@ -346,10 +406,16 @@ $tx = isset($matches[3]) ? round($matches[3]/1024/1024, 2) : 0;
         <!-- Add User -->
         <div class="card">
             <h3 style="color: var(--gold);">Create New User</h3>
-            <form method="POST">
+            <form method="POST" style="display: flex; gap: 10px; align-items: center;">
                 <input type="hidden" name="action" value="add">
-                <input type="text" name="username" placeholder="Username" required>
-                <button type="submit" class="btn btn-add"><i class="fas fa-plus"></i> Generate Account</button>
+                <input type="text" name="username" placeholder="Username" required style="flex:2;">
+                <select name="days" required style="flex:1;">
+                    <option value="30">30 Days</option>
+                    <option value="60">60 Days</option>
+                    <option value="90">90 Days</option>
+                    <option value="365">1 Year</option>
+                </select>
+                <button type="submit" class="btn btn-add"><i class="fas fa-plus"></i> Create</button>
             </form>
         </div>
 
@@ -361,17 +427,36 @@ $tx = isset($matches[3]) ? round($matches[3]/1024/1024, 2) : 0;
                     <thead>
                         <tr>
                             <th>Username</th>
-                            <th>UUID</th>
-                            <th>Created</th>
+                            <th>Expiry</th>
+                            <th>Status</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php foreach($users as $u): ?>
+                        <?php
+                            $is_expired = false;
+                            $days_left = "Unlimited";
+                            if(isset($u['exp_date']) && $u['exp_date'] != "9999-12-31") {
+                                $diff = strtotime($u['exp_date']) - time();
+                                $days_left = round($diff / (60 * 60 * 24));
+                                if($days_left < 0) { $is_expired = true; $days_left = "Expired"; }
+                                else { $days_left .= " Days"; }
+                            }
+                        ?>
                         <tr>
-                            <td><?php echo htmlspecialchars($u['username']); ?></td>
-                            <td style="font-family: monospace; font-size: 0.9rem;"><?php echo $u['uuid']; ?></td>
-                            <td style="font-size: 0.8rem; color: #aaa;"><?php echo $u['created_at']; ?></td>
+                            <td>
+                                <span style="font-weight: bold;"><?php echo htmlspecialchars($u['username']); ?></span><br>
+                                <span style="font-family: monospace; font-size: 0.8rem; color: #888;"><?php echo substr($u['uuid'],0,8); ?>...</span>
+                            </td>
+                            <td style="font-size: 0.9rem;"><?php echo $u['exp_date'] ?? 'Forever'; ?><br><small style="color:#aaa;"><?php echo $days_left; ?></small></td>
+                            <td>
+                                <?php if($is_expired): ?>
+                                    <span class="badge badge-red">Expired</span>
+                                <?php else: ?>
+                                    <span class="badge badge-green">Active</span>
+                                <?php endif; ?>
+                            </td>
                             <td>
                                 <button class="btn-link" onclick="showLinks('<?php echo $u['uuid']; ?>', '<?php echo $domain; ?>')">Links</button>
                                 <?php if($u['username'] !== 'admin'): ?>
