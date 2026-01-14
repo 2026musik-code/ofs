@@ -286,6 +286,15 @@ if(isset($_POST['action'])) {
 
 $users = getUsers();
 $tokens = getTokens();
+
+// --- SERVER STATS ---
+$uptime = shell_exec("uptime -p");
+$cpu_load = sys_getloadavg();
+$ram_total = shell_exec("grep MemTotal /proc/meminfo | awk '{print $2}'");
+$ram_free = shell_exec("grep MemAvailable /proc/meminfo | awk '{print $2}'");
+$ram_used = $ram_total - $ram_free;
+$ram_usage = round(($ram_used / $ram_total) * 100, 2);
+$ip_info = json_decode(file_get_contents("http://ip-api.com/json/"), true);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -311,6 +320,18 @@ $tokens = getTokens();
     <div class="container">
         <form method="POST"><input type="hidden" name="action" value="logout"><button class="btn-logout">LOGOUT</button></form>
         <h1>OWNER DASHBOARD</h1>
+
+        <!-- Stats -->
+        <div class="card">
+            <h2>Server Status</h2>
+            <table>
+                <tr><td>IP Address</td><td><?php echo $ip_info['query'] ?? 'Unknown'; ?></td></tr>
+                <tr><td>ISP / Loc</td><td><?php echo ($ip_info['isp']??'-') . " / " . ($ip_info['country']??'-'); ?></td></tr>
+                <tr><td>Uptime</td><td><?php echo $uptime; ?></td></tr>
+                <tr><td>CPU Load</td><td><?php echo implode(", ", $cpu_load); ?></td></tr>
+                <tr><td>RAM Usage</td><td><?php echo $ram_usage; ?>% (<?php echo round($ram_used/1024); ?>MB / <?php echo round($ram_total/1024); ?>MB)</td></tr>
+            </table>
+        </div>
 
         <?php if($update_msg) echo "<div style='background:#333;padding:10px;'>$update_msg</div>"; ?>
 
@@ -470,6 +491,15 @@ if(isset($_POST['action']) && $_POST['action'] === 'create_account') {
 }
 
 $users = getUsers();
+
+// --- STATS ---
+$uptime = shell_exec("uptime -p");
+$cpu_load = sys_getloadavg();
+$ram_total = shell_exec("grep MemTotal /proc/meminfo | awk '{print $2}'");
+$ram_free = shell_exec("grep MemAvailable /proc/meminfo | awk '{print $2}'");
+$ram_used = $ram_total - $ram_free;
+$ram_usage = round(($ram_used / $ram_total) * 100, 2);
+$ip_info = json_decode(file_get_contents("http://ip-api.com/json/"), true);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -503,6 +533,29 @@ $users = getUsers();
     </div>
 
     <div class="container">
+        <!-- Stats -->
+        <div class="card">
+            <h3><i class="fas fa-server"></i> Server Status</h3>
+            <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+                <div style="flex: 1; min-width: 150px; background: #222; padding: 10px; border-radius: 5px;">
+                    <span style="color: #888;">ISP</span><br>
+                    <strong><?php echo $ip_info['isp'] ?? '-'; ?></strong>
+                </div>
+                <div style="flex: 1; min-width: 150px; background: #222; padding: 10px; border-radius: 5px;">
+                    <span style="color: #888;">CPU Load</span><br>
+                    <strong><?php echo $cpu_load[0]; ?></strong>
+                </div>
+                <div style="flex: 1; min-width: 150px; background: #222; padding: 10px; border-radius: 5px;">
+                    <span style="color: #888;">RAM</span><br>
+                    <strong><?php echo $ram_usage; ?>%</strong>
+                </div>
+                <div style="flex: 1; min-width: 150px; background: #222; padding: 10px; border-radius: 5px;">
+                    <span style="color: #888;">Uptime</span><br>
+                    <strong><?php echo $uptime; ?></strong>
+                </div>
+            </div>
+        </div>
+
         <!-- Contact -->
         <div class="card">
             <h3><i class="fas fa-shopping-cart"></i> Buy Token / Script</h3>
